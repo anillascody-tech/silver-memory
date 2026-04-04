@@ -1,4 +1,4 @@
-import type { RawJob, NormalizedJob, FieldState } from "../../shared/types/jobs";
+import type { RawJob, NormalizedJob, FieldState, SkillMatch, SkillHitSource } from "../../shared/types/jobs";
 import {
   COMPANY_SIZE_PATTERNS,
   DEGREE_KEYWORDS,
@@ -56,10 +56,29 @@ function parseCompanyMeta(companyMeta: string): { companySize: FieldState<string
   };
 }
 
-function parseSkills(raw: RawJob): string[] {
-  const corpus = [raw.title, raw.salaryText, raw.companyMeta, ...raw.tags].join(" ").toLowerCase();
+function parseSkills(raw: RawJob): { skills: string[]; skillMatches: SkillMatch[] } {
+  const fields: Array<{ key: SkillHitSource; text: string }> = [
+    { key: "title", text: raw.title },
+    { key: "salaryText", text: raw.salaryText },
+    { key: "companyMeta", text: raw.companyMeta },
+    ...raw.tags.map((tag) => ({ key: "tags" as SkillHitSource, text: tag }))
+  ];
 
-  return SKILL_DICTIONARY.filter((skill) => corpus.includes(skill.toLowerCase()));
+  const seen = new Set<string>();
+  const skillMatches: SkillMatch[] = [];
+
+  for (const skill of SKILL_DICTIONARY) {
+    const lc = skill.toLowerCase();
+    for (const field of fields) {
+      if (field.text.toLowerCase().includes(lc) && !seen.has(skill)) {
+        seen.add(skill);
+        skillMatches.push({ skill, hitSource: field.key });
+        break;
+      }
+    }
+  }
+
+  return { skills: skillMatches.map((m) => m.skill), skillMatches };
 }
 
 function normalizeJob(raw: RawJob): NormalizedJob {
@@ -67,7 +86,7 @@ function normalizeJob(raw: RawJob): NormalizedJob {
   const degree = parseDegree(raw.tags);
   const expLevel = parseExpLevel(raw.tags);
   const companyMeta = parseCompanyMeta(raw.companyMeta);
-  const skills = parseSkills(raw);
+  const { skills, skillMatches } = parseSkills(raw);
 
   return {
     id: raw.id,
@@ -83,7 +102,8 @@ function normalizeJob(raw: RawJob): NormalizedJob {
     skills: {
       value: skills.length > 0 ? skills : null,
       source: skills.length > 0 ? "parsed" : "missing"
-    }
+    },
+    skillMatches
   };
 }
 

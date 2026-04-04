@@ -58,8 +58,9 @@ function collect(): CollectResponse {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "COLLECT_RAW_JOBS") {
+    // collect() 为同步调用，直接发送响应并返回 false（无需保持端口开放）
     sendResponse(collect());
-    return true;
+    return false;
   }
 
   return false;

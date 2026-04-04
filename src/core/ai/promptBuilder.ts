@@ -9,6 +9,12 @@ export interface AiQuestionPayload {
   rawJobs: RawJob[];
 }
 
+function maskCompanyName(name: string): string {
+  if (name.length <= 2) return "***";
+  // 保留最后两个字（常为行业后缀如"科技"/"互联网"），前面替换为星号
+  return "***" + name.slice(-2);
+}
+
 function pickRepresentativeSamples(rawJobs: RawJob[], limit = 5): RawJob[] {
   return rawJobs.slice(0, limit);
 }
@@ -18,7 +24,7 @@ export function buildAnalysisPrompt(payload: AiQuestionPayload): string {
     id: job.id,
     title: job.title,
     salary: job.salaryText,
-    company: job.companyName,
+    company: maskCompanyName(job.companyName), // 脱敏公司名，不上传原始名称
     tags: job.tags
   }));
 

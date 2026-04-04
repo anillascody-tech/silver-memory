@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:eval": "tsx scripts/eval.ts",
+    "generate-fixtures": "tsx scripts/generate-fixtures.ts"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -16,8 +18,10 @@
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0",
     "@types/chrome": "^0.0.292",
+    "@types/node": "^25.5.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.10",
     "vitest": "^2.1.3"

@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { askGemini } from "../core/ai/geminiClient";
 import { buildReport } from "../core/ai/reportBuilder";
+import { ERROR_CODES } from "../shared/constants/errorCodes";
+import { saveAnalysis } from "../shared/utils/analysisHistory";
 import type { CollectResponse, RawJob } from "../shared/types/jobs";
 
 interface ChatMessage {
@@ -16,7 +18,7 @@ async function collectFromActiveTab(): Promise<CollectResponse> {
       ok: false,
       pageType: "non_target",
       isLoggedIn: false,
-      errorCode: "NOT_TARGET_PAGE",
+      errorCode: ERROR_CODES.NOT_TARGET_PAGE,
       message: "未获取到当前标签页，请重试。"
     };
   }
@@ -27,11 +29,15 @@ async function collectFromActiveTab(): Promise<CollectResponse> {
 }
 
 async function streamText(text: string, onChunk: (value: string) => void): Promise<void> {
-  let current = "";
-  for (const char of text) {
-    current += char;
-    onChunk(current);
-    await new Promise((resolve) => setTimeout(resolve, 6));
+  // 按块渲染：每批 8 个字符触发一次更新，每帧间隔 16ms，避免 O(n²) 累积和长文本卡顿
+  const CHUNK = 8;
+  const DELAY = 16;
+  const chars = Array.from(text);
+  let offset = 0;
+  while (offset < chars.length) {
+    offset = Math.min(offset + CHUNK, chars.length);
+    onChunk(chars.slice(0, offset).join(""));
+    await new Promise((resolve) => setTimeout(resolve, DELAY));
   }
 }
 
@@ -148,9 +154,23 @@ export function App() {
 
       if (response.ok) {
         setReport(buildReport(response.queryContext, response.aggregates));
+        // 持久化到本地历史（最近 20 次，规范 5.3）
+        saveAnalysis(response.queryContext, response.aggregates, response.rawJobs.length).catch(() => {
+          // storage 失败不影响主流程
+        });
       } else {
         setReport("");
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未知错误";
+      setResult({
+        ok: false,
+        pageType: "non_target",
+        isLoggedIn: false,
+        errorCode: ERROR_CODES.NETWORK_ERROR,
+        message: `采集通信失败：${message}。请确认已在 Boss 直聘页面并刷新后重试。`
+      });
+      setReport("");
     } finally {
       setLoading(false);
     }
@@ -183,7 +203,9 @@ export function App() {
         });
       });
     } catch (error) {
-      setAskError(error instanceof Error ? error.message : "AI 调用失败");
+      const errMsg = error instanceof Error ? error.message : "AI 调用失败";
+      const code = errMsg.includes("HTTP") ? ERROR_CODES.NETWORK_ERROR : ERROR_CODES.MODEL_ERROR;
+      setAskError(`[${code}] ${errMsg}`);
       setMessages((prev) => {
         const next = [...prev];
         next[next.length - 1] = { role: "assistant", content: "【调用失败】请检查 API Key、模型名与网络。" };

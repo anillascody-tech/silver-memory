@@ -16,9 +16,17 @@ export interface RawJob {
 
 export type FieldSource = "parsed" | "missing";
 
+/** 技能命中的来源字段，用于"可解释"追溯 */
+export type SkillHitSource = "title" | "salaryText" | "companyMeta" | "tags";
+
 export interface FieldState<T> {
   value: T | null;
   source: FieldSource;
+}
+
+export interface SkillMatch {
+  skill: string;
+  hitSource: SkillHitSource;
 }
 
 export interface NormalizedJob {
@@ -33,6 +41,8 @@ export interface NormalizedJob {
   companySize: FieldState<string>;
   fundingStage: FieldState<string>;
   skills: FieldState<string[]>;
+  /** 技能命中来源（可解释），与 skills.value 一一对应 */
+  skillMatches: SkillMatch[];
 }
 
 export interface QueryContext {
