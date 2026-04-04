@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
 import { askGemini } from "../core/ai/geminiClient";
-import type { CollectResponse, RawJob, NormalizedJob } from "../shared/types/jobs";
+import { buildReport } from "../core/ai/reportBuilder";
+import type { CollectResponse, RawJob } from "../shared/types/jobs";
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
 
 async function collectFromActiveTab(): Promise<CollectResponse> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -15,60 +21,109 @@ async function collectFromActiveTab(): Promise<CollectResponse> {
     };
   }
 
-  const response = (await chrome.tabs.sendMessage(tab.id, {
+  return (await chrome.tabs.sendMessage(tab.id, {
     type: "COLLECT_RAW_JOBS"
   })) as CollectResponse;
-
-  return response;
 }
 
-function RawJobList({ jobs }: { jobs: RawJob[] }) {
-  return (
-    <ul style={{ padding: 0, listStyle: "none", marginTop: 12 }}>
-      {jobs.map((job) => (
-        <li key={job.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 8, marginBottom: 8 }}>
-          <div style={{ fontWeight: 600 }}>{job.title || "未识别职位名称"}</div>
-          <div>{job.salaryText || "薪资未识别"}</div>
-          <div style={{ color: "#666", fontSize: 12 }}>{job.companyName || "公司未识别"}</div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function NormalizedPreview({ jobs }: { jobs: NormalizedJob[] }) {
-  const first = jobs[0];
-  if (!first) {
-    return null;
+async function streamText(text: string, onChunk: (value: string) => void): Promise<void> {
+  let current = "";
+  for (const char of text) {
+    current += char;
+    onChunk(current);
+    await new Promise((resolve) => setTimeout(resolve, 6));
   }
+}
+
+function StatusBar({ result, loading }: { result: CollectResponse | null; loading: boolean }) {
+  const status = loading ? "采集中..." : result?.ok ? "已就绪" : result ? "待修复" : "未开始";
+  const statusColor = loading ? "#b26a00" : result?.ok ? "#0a7d2b" : result ? "#a00000" : "#666";
 
   return (
-    <div style={{ marginTop: 12, border: "1px solid #d3e3ff", borderRadius: 8, padding: 8, background: "#f5f9ff" }}>
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>标准化预览（首条）</div>
-      <div>title: {first.title.value ?? "null"} ({first.title.source})</div>
-      <div>salary_min_k: {first.salaryMinK.value ?? "null"} ({first.salaryMinK.source})</div>
-      <div>salary_max_k: {first.salaryMaxK.value ?? "null"} ({first.salaryMaxK.source})</div>
-      <div>salary_months: {first.salaryMonths.value ?? "null"} ({first.salaryMonths.source})</div>
-      <div>exp_level: {first.expLevel.value ?? "null"} ({first.expLevel.source})</div>
-      <div>degree: {first.degree.value ?? "null"} ({first.degree.source})</div>
-      <div>company_size: {first.companySize.value ?? "null"} ({first.companySize.source})</div>
-      <div>funding_stage: {first.fundingStage.value ?? "null"} ({first.fundingStage.source})</div>
-      <div>skills: {(first.skills.value ?? []).join(", ") || "null"} ({first.skills.source})</div>
-    </div>
+    <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 10, marginTop: 10 }}>
+      <div style={{ fontWeight: 600 }}>状态栏</div>
+      <div style={{ color: statusColor }}>状态：{status}</div>
+      <div>页面：{result?.pageType ?? "未知"}</div>
+      <div>登录：{result ? (result.isLoggedIn ? "已登录" : "未登录") : "未知"}</div>
+    </section>
   );
 }
 
-function AggregatesPreview({ result }: { result: Extract<CollectResponse, { ok: true }> }) {
+function OverviewCards({ result }: { result: Extract<CollectResponse, { ok: true }> }) {
+  const cards = [
+    { title: "样本数", value: result.rawJobs.length },
+    { title: "薪资中位数(K)", value: result.aggregates.salary.medianK ?? "N/A" },
+    { title: "JDHS", value: result.aggregates.jdhs.score },
+    { title: "Top技能", value: result.aggregates.skillsTop[0]?.skill ?? "N/A" }
+  ];
+
   return (
-    <div style={{ marginTop: 12, border: "1px solid #e6e6e6", borderRadius: 8, padding: 8 }}>
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>统计层输出（aggregates）</div>
-      <div>salary.mean_k: {result.aggregates.salary.meanK ?? "null"}</div>
-      <div>salary.median_k: {result.aggregates.salary.medianK ?? "null"}</div>
-      <div>salary.p25_k: {result.aggregates.salary.p25K ?? "null"}</div>
-      <div>salary.p75_k: {result.aggregates.salary.p75K ?? "null"}</div>
-      <div>skills_top[0]: {result.aggregates.skillsTop[0]?.skill ?? "null"}</div>
-      <div>JDHS: {result.aggregates.jdhs.score}</div>
-    </div>
+    <section style={{ marginTop: 10 }}>
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>概览卡</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {cards.map((card) => (
+          <div key={card.title} style={{ border: "1px solid #eee", borderRadius: 8, padding: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>{card.title}</div>
+            <div style={{ fontWeight: 700 }}>{card.value}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ChatPanel({
+  canAsk,
+  asking,
+  question,
+  setQuestion,
+  messages,
+  onAsk,
+  askError
+}: {
+  canAsk: boolean;
+  asking: boolean;
+  question: string;
+  setQuestion: (question: string) => void;
+  messages: ChatMessage[];
+  onAsk: () => Promise<void>;
+  askError: string;
+}) {
+  return (
+    <section style={{ marginTop: 10, border: "1px solid #eee", borderRadius: 8, padding: 10 }}>
+      <div style={{ fontWeight: 600 }}>聊天区</div>
+      <div style={{ maxHeight: 220, overflowY: "auto", marginTop: 8, background: "#fafafa", padding: 8, borderRadius: 6 }}>
+        {messages.length === 0 && <div style={{ color: "#666" }}>请先采集，然后输入问题进行分析。</div>}
+        {messages.map((message, index) => (
+          <div key={`${message.role}_${index}`} style={{ marginBottom: 8 }}>
+            <strong>{message.role === "user" ? "你" : "助手"}：</strong>
+            <span style={{ whiteSpace: "pre-wrap" }}>{message.content}</span>
+          </div>
+        ))}
+      </div>
+      <textarea
+        rows={3}
+        value={question}
+        onChange={(event) => setQuestion(event.target.value)}
+        style={{ width: "100%", marginTop: 8, resize: "vertical" }}
+      />
+      <button style={{ marginTop: 8 }} onClick={onAsk} disabled={!canAsk}>
+        {asking ? "生成中..." : "发送问题"}
+      </button>
+      {askError && <div style={{ color: "#c00", marginTop: 6 }}>错误：{askError}</div>}
+    </section>
+  );
+}
+
+function ReportPanel({ report, jobs }: { report: string; jobs: RawJob[] }) {
+  return (
+    <section style={{ marginTop: 10, border: "1px solid #eee", borderRadius: 8, padding: 10 }}>
+      <div style={{ fontWeight: 600 }}>报告区</div>
+      <pre style={{ whiteSpace: "pre-wrap", background: "#f8f8f8", padding: 8, borderRadius: 6 }}>{report || "暂无报告"}</pre>
+      <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
+        引用样本：{jobs.slice(0, 5).map((job) => job.id).join("、") || "无"}
+      </div>
+    </section>
   );
 }
 
@@ -77,18 +132,25 @@ export function App() {
   const [asking, setAsking] = useState(false);
   const [result, setResult] = useState<CollectResponse | null>(null);
   const [question, setQuestion] = useState("帮我分析上海 Java 后端岗位趋势");
-  const [answer, setAnswer] = useState<string>("");
-  const [askError, setAskError] = useState<string>("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [report, setReport] = useState("");
+  const [askError, setAskError] = useState("");
 
-  const canAsk = useMemo(() => !!result && result.ok && !asking, [result, asking]);
+  const canAsk = useMemo(() => !!result && result.ok && !asking && question.trim().length > 0, [result, asking, question]);
 
   const onStartAnalysis = async () => {
     setLoading(true);
     try {
       const response = await collectFromActiveTab();
       setResult(response);
-      setAnswer("");
       setAskError("");
+      setMessages([]);
+
+      if (response.ok) {
+        setReport(buildReport(response.queryContext, response.aggregates));
+      } else {
+        setReport("");
+      }
     } finally {
       setLoading(false);
     }
@@ -99,19 +161,34 @@ export function App() {
       return;
     }
 
+    const userMessage: ChatMessage = { role: "user", content: question };
+    setMessages((prev) => [...prev, userMessage, { role: "assistant", content: "" }]);
     setAsking(true);
     setAskError("");
+
     try {
-      const text = await askGemini({
+      const answer = await askGemini({
         question,
         queryContext: result.queryContext,
         aggregates: result.aggregates,
         normalizedJobs: result.normalizedJobs,
         rawJobs: result.rawJobs
       });
-      setAnswer(text);
+
+      await streamText(answer, (current) => {
+        setMessages((prev) => {
+          const next = [...prev];
+          next[next.length - 1] = { role: "assistant", content: current };
+          return next;
+        });
+      });
     } catch (error) {
       setAskError(error instanceof Error ? error.message : "AI 调用失败");
+      setMessages((prev) => {
+        const next = [...prev];
+        next[next.length - 1] = { role: "assistant", content: "【调用失败】请检查 API Key、模型名与网络。" };
+        return next;
+      });
     } finally {
       setAsking(false);
     }
@@ -119,61 +196,33 @@ export function App() {
 
   return (
     <main style={{ fontFamily: "sans-serif", padding: 12 }}>
-      <h2 style={{ marginTop: 0 }}>Boss 趋势分析（阶段 4）</h2>
+      <h2 style={{ marginTop: 0 }}>Boss 趋势分析（阶段 5）</h2>
       <button onClick={onStartAnalysis} disabled={loading}>
-        {loading ? "解析中..." : "开始分析"}
+        {loading ? "采集中..." : "开始采集"}
       </button>
 
-      {result && (
-        <section style={{ marginTop: 12 }}>
-          {result.ok ? (
-            <>
-              <div>状态：✅ 已采集</div>
-              <div>页面类型：{result.pageType}</div>
-              <div>登录状态：{result.isLoggedIn ? "已登录" : "未登录"}</div>
-              <div>样本数量：{result.rawJobs.length}</div>
-              <div>标准化数量：{result.normalizedJobs.length}</div>
-              <div>城市：{result.queryContext.city ?? "未知"}</div>
-              <div>关键词：{result.queryContext.keyword ?? "未知"}</div>
+      <StatusBar result={result} loading={loading} />
 
-              <div style={{ marginTop: 12, border: "1px solid #ddd", borderRadius: 8, padding: 8 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>AI 问答</div>
-                <textarea
-                  value={question}
-                  onChange={(event) => setQuestion(event.target.value)}
-                  rows={3}
-                  style={{ width: "100%", resize: "vertical" }}
-                />
-                <button style={{ marginTop: 8 }} onClick={onAsk} disabled={!canAsk}>
-                  {asking ? "生成中..." : "发送问题"}
-                </button>
-                {askError && <div style={{ color: "#d00", marginTop: 8 }}>错误：{askError}</div>}
-                {answer && (
-                  <pre
-                    style={{
-                      marginTop: 8,
-                      whiteSpace: "pre-wrap",
-                      background: "#f8f8f8",
-                      borderRadius: 8,
-                      padding: 8
-                    }}
-                  >
-                    {answer}
-                  </pre>
-                )}
-              </div>
+      {result?.ok && (
+        <>
+          <OverviewCards result={result} />
+          <ChatPanel
+            canAsk={canAsk}
+            asking={asking}
+            question={question}
+            setQuestion={setQuestion}
+            messages={messages}
+            onAsk={onAsk}
+            askError={askError}
+          />
+          <ReportPanel report={report} jobs={result.rawJobs} />
+        </>
+      )}
 
-              <NormalizedPreview jobs={result.normalizedJobs} />
-              <AggregatesPreview result={result} />
-              <RawJobList jobs={result.rawJobs} />
-            </>
-          ) : (
-            <>
-              <div>状态：❌ 采集失败</div>
-              <div>错误码：{result.errorCode}</div>
-              <div>提示：{result.message}</div>
-            </>
-          )}
+      {result && !result.ok && (
+        <section style={{ marginTop: 10, border: "1px solid #ffd4d4", borderRadius: 8, padding: 10, color: "#9c0000" }}>
+          <div>采集失败：{result.errorCode}</div>
+          <div>{result.message}</div>
         </section>
       )}
     </main>
