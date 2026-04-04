@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { askGemini } from "../core/ai/geminiClient";
 import type { CollectResponse, RawJob, NormalizedJob } from "../shared/types/jobs";
 
 async function collectFromActiveTab(): Promise<CollectResponse> {
@@ -57,7 +58,6 @@ function NormalizedPreview({ jobs }: { jobs: NormalizedJob[] }) {
   );
 }
 
-
 function AggregatesPreview({ result }: { result: Extract<CollectResponse, { ok: true }> }) {
   return (
     <div style={{ marginTop: 12, border: "1px solid #e6e6e6", borderRadius: 8, padding: 8 }}>
@@ -74,21 +74,52 @@ function AggregatesPreview({ result }: { result: Extract<CollectResponse, { ok: 
 
 export function App() {
   const [loading, setLoading] = useState(false);
+  const [asking, setAsking] = useState(false);
   const [result, setResult] = useState<CollectResponse | null>(null);
+  const [question, setQuestion] = useState("帮我分析上海 Java 后端岗位趋势");
+  const [answer, setAnswer] = useState<string>("");
+  const [askError, setAskError] = useState<string>("");
+
+  const canAsk = useMemo(() => !!result && result.ok && !asking, [result, asking]);
 
   const onStartAnalysis = async () => {
     setLoading(true);
     try {
       const response = await collectFromActiveTab();
       setResult(response);
+      setAnswer("");
+      setAskError("");
     } finally {
       setLoading(false);
     }
   };
 
+  const onAsk = async () => {
+    if (!result || !result.ok) {
+      return;
+    }
+
+    setAsking(true);
+    setAskError("");
+    try {
+      const text = await askGemini({
+        question,
+        queryContext: result.queryContext,
+        aggregates: result.aggregates,
+        normalizedJobs: result.normalizedJobs,
+        rawJobs: result.rawJobs
+      });
+      setAnswer(text);
+    } catch (error) {
+      setAskError(error instanceof Error ? error.message : "AI 调用失败");
+    } finally {
+      setAsking(false);
+    }
+  };
+
   return (
     <main style={{ fontFamily: "sans-serif", padding: 12 }}>
-      <h2 style={{ marginTop: 0 }}>Boss 趋势分析（阶段 0/1/2/3）</h2>
+      <h2 style={{ marginTop: 0 }}>Boss 趋势分析（阶段 4）</h2>
       <button onClick={onStartAnalysis} disabled={loading}>
         {loading ? "解析中..." : "开始分析"}
       </button>
@@ -104,6 +135,34 @@ export function App() {
               <div>标准化数量：{result.normalizedJobs.length}</div>
               <div>城市：{result.queryContext.city ?? "未知"}</div>
               <div>关键词：{result.queryContext.keyword ?? "未知"}</div>
+
+              <div style={{ marginTop: 12, border: "1px solid #ddd", borderRadius: 8, padding: 8 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>AI 问答</div>
+                <textarea
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  rows={3}
+                  style={{ width: "100%", resize: "vertical" }}
+                />
+                <button style={{ marginTop: 8 }} onClick={onAsk} disabled={!canAsk}>
+                  {asking ? "生成中..." : "发送问题"}
+                </button>
+                {askError && <div style={{ color: "#d00", marginTop: 8 }}>错误：{askError}</div>}
+                {answer && (
+                  <pre
+                    style={{
+                      marginTop: 8,
+                      whiteSpace: "pre-wrap",
+                      background: "#f8f8f8",
+                      borderRadius: 8,
+                      padding: 8
+                    }}
+                  >
+                    {answer}
+                  </pre>
+                )}
+              </div>
+
               <NormalizedPreview jobs={result.normalizedJobs} />
               <AggregatesPreview result={result} />
               <RawJobList jobs={result.rawJobs} />
