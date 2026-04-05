@@ -1,3 +1,3 @@
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-});
+﻿import { registerBackgroundRuntime } from "./runtime";
+
+registerBackgroundRuntime();

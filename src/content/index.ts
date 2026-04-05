@@ -1,5 +1,5 @@
+﻿import { aggregateJobs } from "../core/analytics/aggregator";
 import { collectRawJobs } from "../core/collectors/jobListCollector";
-import { aggregateJobs } from "../core/analytics/aggregator";
 import { normalizeJobs } from "../core/normalizers/jobNormalizer";
 import { detectLoginStatus } from "../core/parsers/loginDetector";
 import { detectPageType } from "../core/parsers/pageDetector";
@@ -7,7 +7,7 @@ import { parseQueryContext } from "../core/parsers/queryContextParser";
 import { ERROR_CODES } from "../shared/constants/errorCodes";
 import type { CollectResponse } from "../shared/types/jobs";
 
-function collect(): CollectResponse {
+export function collectJobsFromPage(): CollectResponse {
   const pageType = detectPageType(window.location.href);
   const isLoggedIn = detectLoginStatus(document);
 
@@ -17,7 +17,7 @@ function collect(): CollectResponse {
       pageType,
       isLoggedIn,
       errorCode: ERROR_CODES.NOT_TARGET_PAGE,
-      message: "当前页面不是职位列表页，请进入职位搜索列表页后再试。"
+      message: "当前页面不是职位列表页，请切换到 Boss 直聘职位列表后再试。"
     };
   }
 
@@ -27,7 +27,7 @@ function collect(): CollectResponse {
       pageType,
       isLoggedIn,
       errorCode: ERROR_CODES.NOT_LOGGED_IN,
-      message: "请先登录 Boss 直聘后再开始分析。"
+      message: "请先登录 Boss 直聘，再开始分析。"
     };
   }
 
@@ -38,7 +38,7 @@ function collect(): CollectResponse {
       pageType,
       isLoggedIn,
       errorCode: ERROR_CODES.NO_JOB_CARD_FOUND,
-      message: "未找到职位卡片，请滚动页面加载后重试。"
+      message: "没有采集到职位卡片，请滚动页面加载更多职位后重试。"
     };
   }
 
@@ -56,12 +56,32 @@ function collect(): CollectResponse {
   };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "COLLECT_RAW_JOBS") {
-    // collect() 为同步调用，直接发送响应并返回 false（无需保持端口开放）
-    sendResponse(collect());
-    return false;
-  }
+export function registerContentRuntime(): void {
+  // 防止同一时刻多个 COLLECT_RAW_JOBS 消息并发触发重复解析
+  let isCollecting = false;
 
-  return false;
-});
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "COLLECT_RAW_JOBS") {
+      return false;
+    }
+
+    if (isCollecting) {
+      sendResponse({
+        ok: false,
+        pageType: "non_target",
+        isLoggedIn: false,
+        errorCode: "COLLECTING_IN_PROGRESS",
+        message: "正在采集中，请稍候再试。"
+      });
+      return false;
+    }
+
+    isCollecting = true;
+    try {
+      sendResponse(collectJobsFromPage());
+    } finally {
+      isCollecting = false;
+    }
+    return false;
+  });
+}
